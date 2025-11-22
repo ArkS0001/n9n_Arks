@@ -1,0 +1,1 @@
+Example knowledge base document. Replace with your own docs for RAG ingestion.

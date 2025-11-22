@@ -1,0 +1,4 @@
+Given the user query and the generated reply, verify:
+1) The reply does not invent facts.
+2) The reply answers the user's question concisely.
+Return JSON: { verified: true/false, reasons: [] }

@@ -1,0 +1,145 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v2.10
+    restart: unless-stopped
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+      - "--certificatesresolvers.le.acme.email=${LE_EMAIL}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - n8n-network
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    networks:
+      - n8n-network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    networks:
+      - n8n-network
+
+  weaviate:
+    image: semitechnologies/weaviate:1.20.0
+    restart: unless-stopped
+    environment:
+      - QUERY_DEFAULTS_LIMIT=20
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - DEFAULT_VECTORIZER_MODULE=none
+    ports:
+      - "8080:8080"
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+    networks:
+      - n8n-network
+
+  local-llm:
+    image: ghcr.io/ollama/ollama:latest
+    # Note: replace with the actual local-llm container you use, or adjust to your HTTP gateway
+    restart: unless-stopped
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
+    ports:
+      - "11434:11434"
+    networks:
+      - n8n-network
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD_FILE=/run/secrets/postgres_password
+      - EXECUTIONS_PROCESS=queue
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=5678
+      - VUE_APP_URL_BASE_API=https://${N8N_HOST}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - GENERIC_WEBHOOK_URL=https://${N8N_HOST}
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL}
+      - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - postgres
+      - redis
+      - weaviate
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`${N8N_HOST}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=le"
+    secrets:
+      - postgres_password
+      - openai_api_key
+    networks:
+      - n8n-network
+
+  n8n-worker:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD_FILE=/run/secrets/postgres_password
+      - EXECUTIONS_PROCESS=queue
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL}
+    depends_on:
+      - redis
+      - postgres
+    deploy:
+      replicas: ${WORKER_REPLICAS}
+    networks:
+      - n8n-network
+
+volumes:
+  pgdata:
+  redisdata:
+  weaviate-data:
+  n8n_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  openai_api_key:
+    file: ./secrets/openai_api_key.txt
+
+networks:
+  n8n-network:
+    driver: bridge

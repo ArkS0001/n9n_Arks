@@ -1,0 +1,153 @@
+{
+  "name": "Agentic RAG Email Assistant - Production",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentic-webhook"
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "url": "http://weaviate:8080/v1/graphql",
+        "options": {
+          "queryParametersUi": {
+            "parameter": [
+              {
+                "name": "query",
+                "value": "{ Get { Things { Document { title excerpt } } } }"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Vector DB (Weaviate) Retrieve",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        350,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build a RAG prompt using retrieved docs\nconst body = items[0].json;\nconst docs = body.data || [];\nconst topKText = (docs.length? docs.map(d => `- ${d.title}: ${d.excerpt}`).join('\\n') : '');\nconst prompt = `System: You are an expert email assistant. Use the documents below.\\nDocuments:\\n${topKText}\\nUser Query: ${body.user_query}\\nGenerate a concise reply and list any actions.`;\nreturn [{json: {prompt}}];"
+      },
+      "name": "Build RAG Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.LOCAL_LLM_URL}}",
+        "options": {
+          "bodyContentType": "json"
+        },
+        "bodyParametersJson": "={\"prompt\": $json[\"prompt\"], \"max_tokens\": 512}"
+      },
+      "name": "Local LLM Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// verification step: call small LLM to validate answer or apply heuristic checks\nconst llmResponse = items[0].json;\n// here we simulate verification; in real flow call another LLM or rules engine\nconst isGood = true;\nreturn [{json: {verified: isGood, final_reply: llmResponse.get('text') || llmResponse.text || llmResponse.output || '<<LLM_REPLY>>'}}];"
+      },
+      "name": "Verify",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        950,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "toEmail": "={{$json[\"reply_to\"]}}",
+        "subject": "={{$json[\"subject\"] || 'Re: ' + $json[\"thread_subject\"] }}",
+        "text": "={{$json[\"final_reply\"]}}"
+      },
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.googleGmail",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Vector DB (Weaviate) Retrieve",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector DB (Weaviate) Retrieve": {
+      "main": [
+        [
+          {
+            "node": "Build RAG Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build RAG Prompt": {
+      "main": [
+        [
+          {
+            "node": "Local LLM Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Local LLM Call": {
+      "main": [
+        [
+          {
+            "node": "Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify": {
+      "main": [
+        [
+          {
+            "node": "Send Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
